@@ -6,6 +6,8 @@ export interface PMessage {
     receiver_id: string;
     read?: boolean;
     read_at?: string;
+    type?: 'text' | 'audio';
+    file_url?: string;
     user_id?: string;
     user_email?: string;
 }

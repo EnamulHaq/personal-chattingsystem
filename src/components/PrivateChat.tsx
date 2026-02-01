@@ -32,6 +32,13 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
     const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
 
+    // Typing & Sound
+    const [partnerIsTyping, setPartnerIsTyping] = useState(false);
+    const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
+
     const resumeAudioContext = async () => {
         if (!audioContextRef.current) {
             audioContextRef.current = new (window.AudioContext || (window as unknown as Window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -40,6 +47,22 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
             await audioContextRef.current.resume();
         }
         return audioContextRef.current;
+    };
+
+    const playNotificationSound = async () => {
+        const ctx = await resumeAudioContext();
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1); // A5
+        g.gain.setValueAtTime(0, ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.05);
+        g.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.2);
     };
 
     // Play/stop ringtone based on incoming call state
@@ -182,8 +205,8 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                         return [...prev, newMsg];
                     });
 
-                    // Mark as read if from partner
                     if (isFromPartner) {
+                        playNotificationSound();
                         markAsRead(newMsg.id);
                     }
                 }
@@ -217,6 +240,72 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
             event: 'call-signal',
             payload: { type, senderId: session.user.id, ...data }
         });
+    };
+
+    const sendTypingStatus = (isTyping: boolean) => {
+        const typingChannel = `signaling:${chatPartner.id}`;
+        supabase.channel(typingChannel).send({
+            type: 'broadcast',
+            event: 'typing',
+            payload: { isTyping, senderId: session.user.id }
+        });
+    };
+
+    // --- Audio Recording ---
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream);
+            mediaRecorderRef.current = recorder;
+            audioChunksRef.current = [];
+
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+
+            recorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                await uploadAudio(audioBlob);
+                stream.getTracks().forEach(t => t.stop());
+            };
+
+            recorder.start();
+            setIsRecording(true);
+        } catch (err) {
+            console.error("Recording error:", err);
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && isRecording) {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+        }
+    };
+
+    const uploadAudio = async (blob: Blob) => {
+        const fileName = `${session.user.id}_${Date.now()}.webm`;
+        const { data, error } = await supabase.storage
+            .from('chat-attachments')
+            .upload(fileName, blob);
+
+        if (error) {
+            console.error("Upload error:", error);
+            return;
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+            .from('chat-attachments')
+            .getPublicUrl(fileName);
+
+        // Send message with audio
+        await supabase.from('messages').insert([{
+            content: 'Voice Message',
+            type: 'audio',
+            file_url: publicUrl,
+            sender_id: session.user.id,
+            receiver_id: chatPartner.id
+        }]);
     };
 
     const endCall = () => {
@@ -440,25 +529,15 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
 
         const signalingChannel = supabase.channel(channelName)
             .on('broadcast', { event: 'call-signal' }, async ({ payload }) => {
-                console.log("📡 Received broadcast signal:", payload);
-                console.log("📡 Sender ID:", payload.senderId, "Expected:", chatPartner.id);
-
-                if (payload.senderId !== chatPartner.id) {
-                    console.log("⚠️ Ignoring signal from different user");
-                    return;
-                }
-
-                console.log("✅ Processing signal:", payload.type);
+                // ... (rest of the call signal logic)
+                if (payload.senderId !== chatPartner.id) return;
 
                 if (payload.type === 'offer') {
-                    console.log("📞 INCOMING CALL! Setting state...");
                     setIncomingCall(true);
                     setIncomingOffer(payload.offer);
-                    console.log("📞 Incoming call state set. Modal should appear.");
                 } else if (payload.type === 'answer') {
                     if (peerConnectionRef.current) {
                         await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
-                        // Process pending candidates
                         while (pendingCandidatesRef.current.length > 0) {
                             const candidate = pendingCandidatesRef.current.shift();
                             if (candidate) await peerConnectionRef.current.addIceCandidate(candidate);
@@ -468,16 +547,18 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                     if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
                         await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
                     } else {
-                        // Queue candidates until remote description is set
                         pendingCandidatesRef.current.push(new RTCIceCandidate(payload.candidate));
                     }
                 } else if (payload.type === 'end-call') {
                     endCall();
                 }
             })
-            .subscribe((status) => {
-                console.log(`Signaling channel ${channelName} status:`, status);
-            });
+            .on('broadcast', { event: 'typing' }, ({ payload }) => {
+                if (payload.senderId === chatPartner.id) {
+                    setPartnerIsTyping(payload.isTyping);
+                }
+            })
+            .subscribe();
 
         signalingChannelRef.current = signalingChannel;
 
@@ -798,7 +879,18 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                                 color: 'white',
                                 position: 'relative'
                             }}>
-                                <div>{msg.content}</div>
+                                {msg.type === 'audio' ? (
+                                    <div style={{ minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                        <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Voice Message</div>
+                                        <audio
+                                            src={msg.file_url}
+                                            controls
+                                            style={{ height: '32px', filter: 'invert(1) opacity(0.8)' }}
+                                        />
+                                    </div>
+                                ) : (
+                                    <div>{msg.content}</div>
+                                )}
                                 {isMe && (
                                     <div style={{
                                         display: 'flex',
@@ -821,6 +913,12 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                 <div ref={messagesEndRef} />
             </div>
 
+            {partnerIsTyping && (
+                <div style={{ padding: '0 1rem 0.5rem', fontSize: '0.75rem', color: '#4ade80', fontStyle: 'italic' }}>
+                    {chatPartner.email.split('@')[0]} is typing...
+                </div>
+            )}
+
             {/* Input */}
             <form onSubmit={handleSendMessage} style={{
                 padding: '1rem',
@@ -831,7 +929,14 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                     <input
                         type="text"
                         value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
+                        onChange={(e) => {
+                            setNewMessage(e.target.value);
+                            sendTypingStatus(true);
+                            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                            typingTimeoutRef.current = setTimeout(() => {
+                                sendTypingStatus(false);
+                            }, 2000);
+                        }}
                         placeholder="Type a message..."
                         style={{
                             width: '100%',
@@ -844,6 +949,26 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                             outline: 'none'
                         }}
                     />
+                    <button
+                        type="button"
+                        onClick={isRecording ? stopRecording : startRecording}
+                        style={{
+                            position: 'absolute',
+                            right: '3rem',
+                            padding: '0.5rem',
+                            background: isRecording ? '#ef4444' : 'rgba(255,255,255,0.1)',
+                            borderRadius: '50%',
+                            color: 'white',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            animation: isRecording ? 'pulse 1s infinite' : 'none'
+                        }}
+                        title={isRecording ? "Stop Recording" : "Record Voice Message"}
+                    >
+                        <Mic size={18} />
+                    </button>
                     <button
                         type="submit"
                         disabled={!newMessage.trim()}
