@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { UserProfile } from '../lib/types';
-import { User, Circle } from 'lucide-react';
+import { User, Circle, LogOut } from 'lucide-react';
 
 interface UserListProps {
     currentUserId: string;
@@ -61,11 +61,15 @@ export default function UserList({ currentUserId, onSelectUser, selectedUserId }
         };
     }, [currentUserId]);
 
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+    };
+
     if (loading) return <div style={{ padding: '1rem', color: 'rgba(255,255,255,0.5)' }}>Loading users...</div>;
 
     return (
         <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--sidebar-bg)' }}>
-            <div style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>
+            <div style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <User size={20} /> Contacts
                 </h2>
@@ -140,6 +144,36 @@ export default function UserList({ currentUserId, onSelectUser, selectedUserId }
                         </button>
                     ))
                 )}
+            </div>
+
+            {/* Logout Button */}
+            <div style={{ padding: '1rem', borderTop: '1px solid var(--glass-border)' }}>
+                <button
+                    onClick={handleLogout}
+                    style={{
+                        width: '100%',
+                        padding: '0.75rem',
+                        borderRadius: '0.5rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.5rem',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        color: '#ef4444',
+                        fontWeight: 'bold',
+                        transition: 'all 0.2s',
+                        border: '1px solid rgba(239, 68, 68, 0.2)'
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                    }}
+                >
+                    <LogOut size={18} />
+                    Logout
+                </button>
             </div>
         </div>
     );
