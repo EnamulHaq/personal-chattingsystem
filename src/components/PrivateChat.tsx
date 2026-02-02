@@ -299,13 +299,21 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
             .getPublicUrl(fileName);
 
         // Send message with audio
-        await supabase.from('messages').insert([{
+        const { error: insertError } = await supabase.from('messages').insert([{
             content: 'Voice Message',
             type: 'audio',
             file_url: publicUrl,
             sender_id: session.user.id,
-            receiver_id: chatPartner.id
+            receiver_id: chatPartner.id,
+            user_id: session.user.id,
+            user_email: session.user.email,
+            read: false
         }]);
+
+        if (insertError) {
+            console.error("Error inserting audio message:", insertError);
+            alert("Failed to send audio message: " + insertError.message);
+        }
     };
 
     const endCall = () => {
@@ -657,7 +665,7 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
                             {chatPartner.email[0].toUpperCase()}
                         </div>
                         <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'white' }}>
-                            {chatPartner.email.split('@')[0]}
+                            {chatPartner.full_name || chatPartner.email.split('@')[0]}
                         </h3>
                         <p style={{ color: 'var(--muted)', marginBottom: '2rem' }}>
                             📞 Incoming audio call...
@@ -915,7 +923,7 @@ export default function PrivateChat({ session, chatPartner }: PrivateChatProps) 
 
             {partnerIsTyping && (
                 <div style={{ padding: '0 1rem 0.5rem', fontSize: '0.75rem', color: '#4ade80', fontStyle: 'italic' }}>
-                    {chatPartner.email.split('@')[0]} is typing...
+                    {chatPartner.full_name || chatPartner.email.split('@')[0]} is typing...
                 </div>
             )}
 

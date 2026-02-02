@@ -15,6 +15,9 @@ export interface PMessage {
 export interface UserProfile {
     id: string;
     email: string;
+    full_name?: string;
+    avatar_url?: string;
     status?: 'online' | 'offline' | 'in-call';
     unread_count?: number;
 }
+
